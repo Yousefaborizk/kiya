@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+pywa[server]
+supabase
+python-dotenv

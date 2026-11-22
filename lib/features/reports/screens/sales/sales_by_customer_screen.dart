@@ -1,0 +1,588 @@
+import 'package:easy_localization/easy_localization.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../../../core/theme/app_theme.dart';
+import '../../../../widgets/shared/app_bar_actions.dart';
+import '../../../../widgets/shared/app_shell.dart';
+import '../../data/models/sales_by_customer_model.dart';
+import '../../providers/reports_provider.dart';
+import '../../utils/sales_by_customer_pdf.dart';
+
+class SalesByCustomerScreen extends ConsumerStatefulWidget {
+  const SalesByCustomerScreen({super.key});
+
+  @override
+  ConsumerState<SalesByCustomerScreen> createState() =>
+      _SalesByCustomerScreenState();
+}
+
+class _SalesByCustomerScreenState extends ConsumerState<SalesByCustomerScreen> {
+  bool _isExporting = false;
+
+  // ============================================
+  // Actions
+  // ============================================
+  Future<void> _pickDateRange() async {
+    final f = ref.read(salesByCustomerFilterProvider);
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+      initialDateRange: DateTimeRange(start: f.fromDate, end: f.toDate),
+    );
+    if (picked == null || !mounted) return;
+    ref.read(salesByCustomerFilterProvider.notifier).state =
+        f.copyWith(fromDate: picked.start, toDate: picked.end);
+  }
+
+  Future<void> _pickSort() async {
+    final f = ref.read(salesByCustomerFilterProvider);
+    final selected = await showDialog<SalesByCustomerSort>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: Text('sort_by'.tr()),
+        children: SalesByCustomerSort.values
+            .map(
+              (s) => SimpleDialogOption(
+                onPressed: () => Navigator.pop(context, s),
+                child: Row(
+                  children: [
+                    Icon(
+                      s == f.sort
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_off,
+                      size: 18,
+                      color: s == f.sort
+                          ? AppColors.primary
+                          : AppColors.textSecondaryLight,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(s.labelKey.tr()),
+                  ],
+                ),
+              ),
+            )
+            .toList(),
+      ),
+    );
+    if (selected == null || !mounted) return;
+    ref.read(salesByCustomerFilterProvider.notifier).state =
+        f.copyWith(sort: selected);
+  }
+
+  Future<void> _exportPdf(
+    SalesByCustomerModel data, {
+    required bool share,
+  }) async {
+    setState(() => _isExporting = true);
+    try {
+      final lang = context.locale.languageCode;
+      if (share) {
+        await SalesByCustomerPdf.share(data, langCode: lang);
+      } else {
+        await SalesByCustomerPdf.print(data, langCode: lang);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('error_label'.tr(args: ['$e']))),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
+    }
+  }
+
+  // ============================================
+  // Build
+  // ============================================
+  @override
+  Widget build(BuildContext context) {
+    final filter = ref.watch(salesByCustomerFilterProvider);
+    final dataAsync = ref.watch(salesByCustomerProvider);
+
+    return AppShell(
+      currentRoute: '/reports',
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text('sales_by_customer'.tr()),
+          automaticallyImplyLeading: false,
+          leading: MediaQuery.of(context).size.width < 900
+              ? Builder(
+                  builder: (context) => IconButton(
+                    icon: const Icon(Icons.menu),
+                    onPressed: () => Scaffold.of(context).openDrawer(),
+                  ),
+                )
+              : null,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.sort),
+              tooltip: 'sort_by'.tr(),
+              onPressed: _pickSort,
+            ),
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'refresh'.tr(),
+              onPressed: () => ref.invalidate(salesByCustomerProvider),
+            ),
+            const AppBarActions(),
+          ],
+        ),
+        body: Column(
+          children: [
+            // ── Filter bar ──────────────────────────
+            Container(
+              padding: const EdgeInsets.all(12),
+              color: AppColors.primary.withValues(alpha: 0.04),
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 1400),
+                  child: Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      ActionChip(
+                        avatar: const Icon(Icons.date_range, size: 16),
+                        label: Text(
+                          '${_fmt(filter.fromDate)} → ${_fmt(filter.toDate)}',
+                        ),
+                        onPressed: _pickDateRange,
+                      ),
+                      ActionChip(
+                        avatar: const Icon(Icons.sort, size: 16),
+                        label: Text(filter.sort.labelKey.tr()),
+                        onPressed: _pickSort,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            // ── Body ────────────────────────────────
+            Expanded(
+              child: dataAsync.when(
+                data: (data) {
+                  if (data.rows.isEmpty) {
+                    return _EmptyState();
+                  }
+                  return _Body(
+                    data: data,
+                    isExporting: _isExporting,
+                    onShare: () => _exportPdf(data, share: true),
+                    onPrint: () => _exportPdf(data, share: false),
+                  );
+                },
+                loading: () => const Center(child: CircularProgressIndicator()),
+                error: (e, _) => Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text('error_label'.tr(args: ['$e'])),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _fmt(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+}
+
+// ============================================
+// Body
+// ============================================
+class _Body extends StatelessWidget {
+  final SalesByCustomerModel data;
+  final bool isExporting;
+  final VoidCallback onShare;
+  final VoidCallback onPrint;
+
+  const _Body({
+    required this.data,
+    required this.isExporting,
+    required this.onShare,
+    required this.onPrint,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1400),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // ── Summary cards ────────────────────
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final cross = constraints.maxWidth > 900 ? 4 : 2;
+                  return GridView.count(
+                    crossAxisCount: cross,
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                    childAspectRatio: 2.5,
+                    children: [
+                      _SummaryCard(
+                        label: 'customers_count'.tr(),
+                        value: '${data.customerCount}',
+                        color: AppColors.info,
+                      ),
+                      _SummaryCard(
+                        label: 'gross_sales'.tr(),
+                        value: data.totalGross.toStringAsFixed(2),
+                        color: AppColors.primary,
+                      ),
+                      _SummaryCard(
+                        label: 'discount_amount'.tr(),
+                        value: data.totalDiscount.toStringAsFixed(2),
+                        color: AppColors.warning,
+                      ),
+                      _SummaryCard(
+                        label: 'net_sales'.tr(),
+                        value: data.totalNet.toStringAsFixed(2),
+                        color: AppColors.success,
+                        bold: true,
+                      ),
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+
+              // ── Meta ─────────────────────────────
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.info_outline,
+                        size: 18,
+                        color: AppColors.textSecondaryLight,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${'invoices_count'.tr()}: ${data.totalInvoices}',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      const SizedBox(width: 16),
+                      Text(
+                        '${'avg_invoice'.tr()}: '
+                        '${data.averageInvoiceValue.toStringAsFixed(2)}',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // ── Export buttons ───────────────────
+              Row(
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: isExporting ? null : onShare,
+                    icon: isExporting
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.picture_as_pdf),
+                    label: Text('export_pdf'.tr()),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton.icon(
+                    onPressed: isExporting ? null : onPrint,
+                    icon: const Icon(Icons.print),
+                    label: Text('print_report'.tr()),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              // ── Table ────────────────────────────
+              Card(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minWidth: 1000),
+                    child: DataTable(
+                      headingRowColor: WidgetStatePropertyAll(
+                        AppColors.primary.withValues(alpha: 0.08),
+                      ),
+                      columns: [
+                        const DataColumn(label: Text('#')),
+                        DataColumn(label: Text('customer'.tr())),
+                        DataColumn(label: Text('phone'.tr())),
+                        DataColumn(
+                          label: Text('invoices'.tr()),
+                          numeric: true,
+                        ),
+                        DataColumn(
+                          label: Text('gross_sales'.tr()),
+                          numeric: true,
+                        ),
+                        DataColumn(
+                          label: Text('discount'.tr()),
+                          numeric: true,
+                        ),
+                        DataColumn(
+                          label: Text('net_sales'.tr()),
+                          numeric: true,
+                        ),
+                        DataColumn(
+                          label: Text('avg_invoice'.tr()),
+                          numeric: true,
+                        ),
+                      ],
+                      rows: [
+                        for (var i = 0; i < data.rows.length; i++)
+                          _buildRow(context, i, data.rows[i]),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+              // ── Totals row ────────────────────────
+              const SizedBox(height: 8),
+              Card(
+                color: AppColors.primary.withValues(alpha: 0.06),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  child: Row(
+                    children: [
+                      const SizedBox(
+                        width: 100,
+                        child: Text(
+                          'total',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      Expanded(
+                        child: Text(
+                          '${'customers_count'.tr()}: ${data.customerCount}',
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      Expanded(
+                        child: Text(
+                          '${data.totalInvoices}',
+                          textAlign: TextAlign.end,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: _tot(data.totalGross.toStringAsFixed(2)),
+                      ),
+                      Expanded(
+                        child: _tot(
+                          data.totalDiscount.toStringAsFixed(2),
+                          color: AppColors.warning,
+                        ),
+                      ),
+                      Expanded(
+                        child: _tot(
+                          data.totalNet.toStringAsFixed(2),
+                          color: AppColors.success,
+                          bold: true,
+                        ),
+                      ),
+                      Expanded(
+                        child: _tot(
+                          data.averageInvoiceValue.toStringAsFixed(2),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _tot(String v, {Color? color, bool bold = false}) => Text(
+        v,
+        textAlign: TextAlign.end,
+        style: TextStyle(
+          fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+          color: color ?? (bold ? AppColors.primary : null),
+          fontSize: 13,
+        ),
+      );
+
+  DataRow _buildRow(
+    BuildContext context,
+    int index,
+    SalesByCustomerRow r,
+  ) {
+    return DataRow(
+      cells: [
+        DataCell(Text('${index + 1}')),
+        DataCell(
+          InkWell(
+            onTap: r.customerId == null
+                ? null
+                : () => context.push(
+                      '/sales/customers/${r.customerId}',
+                    ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  r.customerName,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    decoration: TextDecoration.underline,
+                  ),
+                ),
+                if (r.customerCode != null)
+                  Text(
+                    r.customerCode!,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppColors.textSecondaryLight,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        DataCell(Text(r.phone ?? '-')),
+        DataCell(Text(
+          '${r.invoiceCount}',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        )),
+        DataCell(Text(r.grossAmount.toStringAsFixed(2))),
+        DataCell(Text(
+          r.discountAmount > 0.001 ? r.discountAmount.toStringAsFixed(2) : '-',
+          style: TextStyle(
+            color: r.discountAmount > 0.001 ? AppColors.warning : null,
+          ),
+        )),
+        DataCell(Text(
+          r.netAmount.toStringAsFixed(2),
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            color: AppColors.success,
+          ),
+        )),
+        DataCell(Text(r.averageInvoiceValue.toStringAsFixed(2))),
+      ],
+    );
+  }
+}
+
+// ============================================
+// Summary card
+// ============================================
+class _SummaryCard extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+  final bool bold;
+
+  const _SummaryCard({
+    required this.label,
+    required this.value,
+    required this.color,
+    this.bold = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppColors.textSecondaryLight,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: bold ? 22 : 20,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================
+// Empty state
+// ============================================
+class _EmptyState extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.people_outline,
+              size: 72,
+              color: AppColors.textSecondaryLight.withValues(alpha: 0.5),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'no_sales_in_period'.tr(),
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'no_sales_in_period_subtitle'.tr(),
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.textSecondaryLight,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
