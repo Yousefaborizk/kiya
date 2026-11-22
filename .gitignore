@@ -43,3 +43,13 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Environment Variables
+.env
+.env copy
+
+# Node modules (for whatsapp-server)
+node_modules/
+
+# Sensitive API Config
+lib/core/config/api_config.dart
