@@ -1,5 +1,4 @@
-app = "si-exporter-api"  # غيّره لاسم فريد لو عايز
-primary_region = "iad"    # ممكن تغيّره لأقرب منطقة ليك (مثلاً "fra" لأوروبا)
+app = "si-exporter-api-yousef"primary_region = "iad"    # ممكن تغيّره لأقرب منطقة ليك (مثلاً "fra" لأوروبا)
 
 [build]
   dockerfile = "Dockerfile"
