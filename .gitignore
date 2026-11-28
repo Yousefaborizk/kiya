@@ -53,3 +53,29 @@ node_modules/
 
 # Sensitive API Config
 lib/core/config/api_config.dart
+# Local helper scripts
+Run
+**/.env
+__pycache__/
+
+cloudflared
+cloudflared.tgz
+*.tgz
+.vscode/
+.env.*
+**/.env.*
+!.env.example
+__pycache__/
+*.pyc
+Run
+
+cloudflared
+cloudflared.tgz
+*.tgz
+.vscode/
+.env.*
+**/.env.*
+!.env.example
+__pycache__/
+*.pyc
+Run

@@ -1,7 +1,3 @@
-// ============================================
-// Facebook Service
-// ============================================
-
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show SocketException;
@@ -18,14 +14,15 @@ class FacebookService {
   static const Duration _sendTimeout = Duration(seconds: 15);
 
   // ============================================
-  // 1. CONVERSATIONS (رسايل)
+  // 1. CONVERSATIONS — REALTIME STREAM ✅
   // ============================================
   Stream<List<FacebookConversation>> streamConversations() {
     return _client
         .from('facebook_conversations')
         .stream(primaryKey: ['id'])
         .order('last_message_at', ascending: false)
-        .asyncMap((rows) async {
+        .asyncMap((conversationsData) async {
+          // جلب أسماء الموظفين مرة واحدة لكل emission
           Map<dynamic, dynamic> userMap = {};
           try {
             final users = await _client.from('users').select('id, full_name');
@@ -33,7 +30,8 @@ class FacebookService {
           } catch (e) {
             debugPrint('⚠️ Could not fetch users: $e');
           }
-          return rows.map((e) {
+
+          return conversationsData.map((e) {
             e['assigned_agent_name'] =
                 e['assigned_to'] != null ? userMap[e['assigned_to']] : null;
             return FacebookConversation.fromJson(e);
@@ -41,6 +39,38 @@ class FacebookService {
         });
   }
 
+  // ============================================
+  // 1.b LEGACY: getConversations (One-shot)
+  // ============================================
+  Future<List<FacebookConversation>> getConversations() async {
+    try {
+      final response = await _client
+          .from('facebook_conversations')
+          .select()
+          .order('last_message_at', ascending: false);
+
+      Map<dynamic, dynamic> userMap = {};
+      try {
+        final users = await _client.from('users').select('id, full_name');
+        userMap = {for (var u in users) u['id']: u['full_name']};
+      } catch (e) {
+        debugPrint('⚠️ Could not fetch users: $e');
+      }
+
+      return (response as List).map((e) {
+        e['assigned_agent_name'] =
+            e['assigned_to'] != null ? userMap[e['assigned_to']] : null;
+        return FacebookConversation.fromJson(e);
+      }).toList();
+    } catch (e) {
+      debugPrint('❌ Error fetching conversations: $e');
+      throw Exception('فشل تحميل المحادثات: $e');
+    }
+  }
+
+  // ============================================
+  // 2. MESSAGES (Stream)
+  // ============================================
   Stream<List<FacebookMessage>> streamMessages(String conversationId) {
     return _client
         .from('facebook_messages')
@@ -51,7 +81,7 @@ class FacebookService {
   }
 
   // ============================================
-  // 2. SEND MESSAGE (إرسال رسالة)
+  // 3. SEND MESSAGE
   // ============================================
   Future<void> sendMessage(String psid, String text) async {
     if (psid.trim().isEmpty) throw Exception('PSID غير موجود');
@@ -64,27 +94,37 @@ class FacebookService {
           .post(
             ApiConfig.facebookSendUri,
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'psid': psid, 'text': text, 'agent_id': myId}),
+            body: jsonEncode({
+              'phone': psid,
+              'text': text,
+              'agent_id': myId,
+            }),
           )
           .timeout(_sendTimeout);
 
-      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      Map<String, dynamic> body = {};
+      try {
+        body = jsonDecode(response.body) as Map<String, dynamic>;
+      } catch (_) {}
+
       if (response.statusCode != 200 || body['success'] != true) {
-        throw Exception(body['error'] ?? 'فشل الإرسال');
+        throw Exception(
+            body['error']?.toString() ?? body['detail'] ?? 'فشل الإرسال');
       }
     } on TimeoutException {
       throw Exception('انتهت مهلة الاتصال بالسيرفر');
     } on SocketException {
-      throw Exception('تعذّر الاتصال بالسيرفر — تأكد من تشغيل Gateway');
+      throw Exception('تعذّر الاتصال بالسيرفر — تأكد من تشغيل السيرفر');
+    } on http.ClientException catch (e) {
+      throw Exception('خطأ في الشبكة: ${e.message}');
     }
   }
 
   // ============================================
-  // 3. REPLY TO COMMENT (الرد على كومنت)
+  // 4. REPLY TO COMMENT
   // ============================================
   Future<void> replyToComment(String commentId, String text) async {
     if (commentId.trim().isEmpty || text.trim().isEmpty) return;
-
     final myId = _client.auth.currentUser?.id;
 
     try {
@@ -92,43 +132,53 @@ class FacebookService {
           .post(
             Uri.parse('${ApiConfig.facebookGateway}/reply-comment'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(
-                {'comment_id': commentId, 'text': text, 'agent_id': myId}),
+            body: jsonEncode({
+              'comment_id': commentId,
+              'text': text,
+              'agent_id': myId,
+            }),
           )
           .timeout(_sendTimeout);
 
-      final body = jsonDecode(response.body) as Map<String, dynamic>;
-      if (response.statusCode != 200 || body['success'] != true) {
-        throw Exception(body['error'] ?? 'فشل الرد على الكومنت');
+      if (response.statusCode != 200) {
+        throw Exception('فشل الرد على الكومنت (${response.statusCode})');
       }
+    } on TimeoutException {
+      throw Exception('انتهت مهلة الاتصال بالسيرفر');
+    } on SocketException {
+      throw Exception('تعذّر الاتصال بالسيرفر');
     } catch (e) {
       throw Exception('خطأ أثناء الرد: $e');
     }
   }
 
   // ============================================
-  // 4. FETCH POSTS (جلب البوستات)
+  // 5. FETCH POSTS
   // ============================================
   Future<List<Map<String, dynamic>>> getPosts() async {
     try {
       final response = await http
-          .get(
-            Uri.parse('${ApiConfig.facebookGateway}/posts'),
-          )
+          .get(Uri.parse('${ApiConfig.facebookGateway}/posts'))
           .timeout(_sendTimeout);
 
-      final body = jsonDecode(response.body) as Map<String, dynamic>;
-      if (response.statusCode != 200 || body['success'] != true) {
-        throw Exception(body['error'] ?? 'فشل جلب البوستات');
+      if (response.statusCode != 200) {
+        throw Exception('فشل جلب البوستات (${response.statusCode})');
       }
-      return List<Map<String, dynamic>>.from(body['posts'] ?? []);
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final data = body['data'] as List<dynamic>? ?? [];
+      return data.cast<Map<String, dynamic>>();
+    } on TimeoutException {
+      throw Exception('انتهت مهلة الاتصال بالسيرفر');
+    } on SocketException {
+      throw Exception('تعذّر الاتصال بالسيرفر');
     } catch (e) {
       throw Exception('خطأ في جلب البوستات: $e');
     }
   }
 
   // ============================================
-  // 5. ASSIGNMENT (إسناد المحادثة للموظف)
+  // 6. ASSIGNMENT
   // ============================================
   Future<void> assignToMe(String conversationId, String myUserId) async {
     await _client

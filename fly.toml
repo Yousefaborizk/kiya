@@ -1,0 +1,28 @@
+app = "si-exporter-api"  # غيّره لاسم فريد لو عايز
+primary_region = "iad"    # ممكن تغيّره لأقرب منطقة ليك (مثلاً "fra" لأوروبا)
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  PYTHONUNBUFFERED = "1"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"   # بيوقف الماكينة لما مفيش طلبات لتوفير التكلفة
+  auto_start_machines = true    # بيشغلها تاني أول ما يجيلها طلب
+  min_machines_running = 0      # تقدر تخليها 1 لو عايزها شغالة 24/7 (بتكلفة أعلى شوية)
+
+  [[http_service.checks]]
+    grace_period = "5s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

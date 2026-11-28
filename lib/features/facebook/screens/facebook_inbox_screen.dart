@@ -3,9 +3,17 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/facebook_models.dart';
 import '../services/facebook_service.dart';
+import 'facebook_chat_screen.dart';
 
-class FacebookInboxScreen extends StatelessWidget {
+class FacebookInboxScreen extends StatefulWidget {
   const FacebookInboxScreen({super.key});
+  @override
+  State<FacebookInboxScreen> createState() => _FacebookInboxScreenState();
+}
+
+class _FacebookInboxScreenState extends State<FacebookInboxScreen> {
+  Key _refreshKey = UniqueKey();
+  void _refresh() => setState(() => _refreshKey = UniqueKey());
 
   @override
   Widget build(BuildContext context) {
@@ -19,6 +27,9 @@ class FacebookInboxScreen extends StatelessWidget {
             'إدارة صفحة فيسبوك',
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
           ),
+          actions: [
+            IconButton(icon: const Icon(Icons.refresh), onPressed: _refresh),
+          ],
           bottom: const TabBar(
             indicatorColor: Colors.white,
             labelColor: Colors.white,
@@ -30,8 +41,9 @@ class FacebookInboxScreen extends StatelessWidget {
             ],
           ),
         ),
-        body: const TabBarView(
-          children: [
+        body: TabBarView(
+          key: _refreshKey,
+          children: const [
             _FacebookMessagesTab(),
             _FacebookCommentsTab(),
             _FacebookPostsTab(),
@@ -43,7 +55,7 @@ class FacebookInboxScreen extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 1. تبويب الرسائل (Messages Tab)
+// 1. تبويب الرسائل — REALTIME ✅
 // ═══════════════════════════════════════════════════════════
 class _FacebookMessagesTab extends StatefulWidget {
   const _FacebookMessagesTab();
@@ -55,6 +67,9 @@ class _FacebookMessagesTabState extends State<_FacebookMessagesTab> {
   final _service = FacebookService();
   final TextEditingController _searchController = TextEditingController();
   String _search = '';
+
+  // ✅ Nullable (يمنع LateInitializationError على hot reload)
+  Stream<List<FacebookConversation>>? _conversationsStream;
 
   @override
   void dispose() {
@@ -73,9 +88,7 @@ class _FacebookMessagesTabState extends State<_FacebookMessagesTab> {
           color: Colors.white,
           child: TextField(
             controller: _searchController,
-            onChanged: (v) {
-              setState(() => _search = v.toLowerCase().trim());
-            },
+            onChanged: (v) => setState(() => _search = v.toLowerCase().trim()),
             decoration: InputDecoration(
               hintText: 'ابحث باسم العميل...',
               prefixIcon: const Icon(Icons.search, color: Color(0xFF1877F2)),
@@ -90,13 +103,24 @@ class _FacebookMessagesTabState extends State<_FacebookMessagesTab> {
         ),
         Expanded(
           child: StreamBuilder<List<FacebookConversation>>(
-            stream: _service.streamConversations(),
+            // ✅ Init lazily — يشتغل حتى مع الـ hot reload
+            stream: _conversationsStream ??= _service.streamConversations(),
             builder: (context, snap) {
-              if (!snap.hasData) {
+              if (snap.connectionState == ConnectionState.waiting &&
+                  !snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
               if (snap.hasError) {
-                return Center(child: Text('خطأ: ${snap.error}'));
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      'خطأ في تحميل البيانات:\n${snap.error}',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.red),
+                    ),
+                  ),
+                );
               }
 
               var items = snap.data ?? [];
@@ -111,7 +135,26 @@ class _FacebookMessagesTabState extends State<_FacebookMessagesTab> {
               }
 
               if (items.isEmpty) {
-                return const Center(child: Text('لا توجد رسائل'));
+                return Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        _search.isEmpty ? Icons.inbox : Icons.search_off,
+                        size: 64,
+                        color: Colors.grey.shade400,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        _search.isEmpty
+                            ? 'لا توجد رسائل'
+                            : 'لا توجد نتائج لـ "$_search"',
+                        style: TextStyle(
+                            fontSize: 16, color: Colors.grey.shade600),
+                      ),
+                    ],
+                  ),
+                );
               }
 
               return ListView.separated(
@@ -183,15 +226,17 @@ class _FacebookMessagesTabState extends State<_FacebookMessagesTab> {
                     ),
                     onTap: () async {
                       if (c.assignedTo == null && myId != null) {
-                        await _service.assignToMe(c.id, myId);
+                        try {
+                          await _service.assignToMe(c.id, myId);
+                        } catch (e) {
+                          debugPrint('⚠️ assignToMe failed: $e');
+                        }
                       }
-                      if (!context.mounted) {
-                        return;
-                      }
+                      if (!context.mounted) return;
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => _FacebookChatScreen(conversation: c),
+                          builder: (_) => FacebookChatScreen(conversation: c),
                         ),
                       );
                     },
@@ -207,159 +252,7 @@ class _FacebookMessagesTabState extends State<_FacebookMessagesTab> {
 }
 
 // ═══════════════════════════════════════════════════════════
-// شاشة المحادثة (Chat Screen)
-// ═══════════════════════════════════════════════════════════
-class _FacebookChatScreen extends StatefulWidget {
-  final FacebookConversation conversation;
-  const _FacebookChatScreen({required this.conversation});
-  @override
-  State<_FacebookChatScreen> createState() => _FacebookChatScreenState();
-}
-
-class _FacebookChatScreenState extends State<_FacebookChatScreen> {
-  final _service = FacebookService();
-  final _ctrl = TextEditingController();
-  final _scroll = ScrollController();
-  bool _sending = false;
-
-  Future<void> _send() async {
-    final text = _ctrl.text.trim();
-    if (text.isEmpty || _sending) {
-      return;
-    }
-    setState(() => _sending = true);
-    _ctrl.clear();
-    try {
-      await _service.sendMessage(widget.conversation.psid, text);
-    } catch (e) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
-    } finally {
-      if (mounted) {
-        setState(() => _sending = false);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF0F2F5),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF1877F2),
-        title:
-            Text(widget.conversation.customerName ?? widget.conversation.psid),
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: StreamBuilder<List<FacebookMessage>>(
-              stream: _service.streamMessages(widget.conversation.id),
-              builder: (context, snap) {
-                if (!snap.hasData) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                final messages = snap.data!;
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (_scroll.hasClients) {
-                    _scroll.jumpTo(_scroll.position.maxScrollExtent);
-                  }
-                });
-                return ListView.builder(
-                  controller: _scroll,
-                  padding: const EdgeInsets.all(12),
-                  itemCount: messages.length,
-                  itemBuilder: (_, i) {
-                    final m = messages[i];
-                    final isMe = m.fromMe;
-                    return Align(
-                      alignment:
-                          isMe ? Alignment.centerLeft : Alignment.centerRight,
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 6),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 8),
-                        constraints: BoxConstraints(
-                            maxWidth: MediaQuery.of(context).size.width * 0.72),
-                        decoration: BoxDecoration(
-                          color: isMe ? const Color(0xFF1877F2) : Colors.white,
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              m.content ?? '',
-                              style: TextStyle(
-                                color: isMe ? Colors.white : Colors.black87,
-                                fontSize: 15,
-                              ),
-                            ),
-                            Text(
-                              DateFormat('hh:mm a')
-                                  .format(m.timestamp.toLocal()),
-                              style: TextStyle(
-                                color: isMe ? Colors.white70 : Colors.grey,
-                                fontSize: 10,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.all(8),
-            color: Colors.white,
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _ctrl,
-                    onSubmitted: (_) => _send(),
-                    decoration: InputDecoration(
-                      hintText: 'اكتب رسالة...',
-                      filled: true,
-                      fillColor: const Color(0xFFF0F2F5),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide.none,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                CircleAvatar(
-                  backgroundColor: const Color(0xFF1877F2),
-                  child: IconButton(
-                    icon: _sending
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                                color: Colors.white, strokeWidth: 2),
-                          )
-                        : const Icon(Icons.send, color: Colors.white),
-                    onPressed: _sending ? null : _send,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════════════════
-// 2. تبويب الكومنتات (Comments Tab)
+// 2. تبويب الكومنتات — REALTIME (social_comments)
 // ═══════════════════════════════════════════════════════════
 class _FacebookCommentsTab extends StatefulWidget {
   const _FacebookCommentsTab();
@@ -371,10 +264,16 @@ class _FacebookCommentsTabState extends State<_FacebookCommentsTab> {
   final _service = FacebookService();
   final _replyController = TextEditingController();
 
+  @override
+  void dispose() {
+    _replyController.dispose();
+    super.dispose();
+  }
+
   void _showReplyDialog(String commentId, String senderName) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: Text('الرد على $senderName'),
         content: TextField(
           controller: _replyController,
@@ -386,22 +285,18 @@ class _FacebookCommentsTabState extends State<_FacebookCommentsTab> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(ctx),
             child: const Text('إلغاء'),
           ),
           ElevatedButton(
             onPressed: () async {
               final text = _replyController.text.trim();
-              if (text.isEmpty) {
-                return;
-              }
-              Navigator.pop(context);
+              if (text.isEmpty) return;
+              Navigator.pop(ctx);
               _replyController.clear();
               try {
                 await _service.replyToComment(commentId, text);
-                if (!context.mounted) {
-                  return;
-                }
+                if (!mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('✅ تم الرد'),
@@ -409,9 +304,7 @@ class _FacebookCommentsTabState extends State<_FacebookCommentsTab> {
                   ),
                 );
               } catch (e) {
-                if (!context.mounted) {
-                  return;
-                }
+                if (!mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text('❌ $e'),
@@ -436,6 +329,9 @@ class _FacebookCommentsTabState extends State<_FacebookCommentsTab> {
           .eq('platform', 'facebook')
           .order('created_at', ascending: false),
       builder: (context, snap) {
+        if (snap.hasError) {
+          return Center(child: Text('خطأ: ${snap.error}'));
+        }
         if (!snap.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
@@ -473,21 +369,20 @@ class _FacebookCommentsTabState extends State<_FacebookCommentsTab> {
                     const SizedBox(height: 12),
                     Text(c['content'] ?? ''),
                     const Divider(),
-                    if (isReplied) ...[
+                    if (isReplied)
                       const Text(
                         '✅ تم الرد',
                         style: TextStyle(color: Colors.green),
-                      ),
-                    ] else ...[
+                      )
+                    else
                       TextButton.icon(
                         icon: const Icon(Icons.reply),
                         label: const Text('رد'),
                         onPressed: () => _showReplyDialog(
                           c['comment_id'],
-                          c['sender_name'],
+                          c['sender_name'] ?? 'مستخدم',
                         ),
                       ),
-                    ],
                   ],
                 ),
               ),
@@ -500,7 +395,7 @@ class _FacebookCommentsTabState extends State<_FacebookCommentsTab> {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 3. تبويب البوستات (Posts Tab)
+// 3. تبويب البوستات
 // ═══════════════════════════════════════════════════════════
 class _FacebookPostsTab extends StatefulWidget {
   const _FacebookPostsTab();
@@ -516,6 +411,11 @@ class _FacebookPostsTabState extends State<_FacebookPostsTab> {
   void initState() {
     super.initState();
     _postsFuture = _service.getPosts();
+  }
+
+  Future<void> _reload() async {
+    setState(() => _postsFuture = _service.getPosts());
+    await _postsFuture;
   }
 
   @override
@@ -536,9 +436,7 @@ class _FacebookPostsTabState extends State<_FacebookPostsTab> {
         }
 
         return RefreshIndicator(
-          onRefresh: () async {
-            setState(() => _postsFuture = _service.getPosts());
-          },
+          onRefresh: _reload,
           child: ListView.builder(
             padding: const EdgeInsets.all(12),
             itemCount: posts.length,
@@ -584,6 +482,7 @@ class _FacebookPostsTabState extends State<_FacebookPostsTab> {
                         post['full_picture'],
                         width: double.infinity,
                         fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => const SizedBox(),
                       ),
                     ],
                     const SizedBox(height: 12),

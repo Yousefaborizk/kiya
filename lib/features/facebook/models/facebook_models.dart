@@ -24,6 +24,18 @@ class FacebookConversation {
   });
 
   factory FacebookConversation.fromJson(Map<String, dynamic> json) {
+    DateTime parsedDate;
+    try {
+      final rawDate = json['last_message_at'];
+      if (rawDate != null) {
+        parsedDate = DateTime.parse(rawDate.toString()).toLocal();
+      } else {
+        parsedDate = DateTime.now();
+      }
+    } catch (e) {
+      parsedDate = DateTime.now();
+    }
+
     return FacebookConversation(
       id: json['id'],
       pageId: json['page_id'] ?? '',
@@ -31,9 +43,7 @@ class FacebookConversation {
       customerName: json['customer_name'],
       customerProfilePic: json['customer_profile_pic'],
       lastMessagePreview: json['last_message_preview'],
-      lastMessageAt: json['last_message_at'] != null
-          ? DateTime.parse(json['last_message_at'])
-          : DateTime.now(),
+      lastMessageAt: parsedDate,
       assignedTo: json['assigned_to'],
       assignedAgentName: json['assigned_agent_name'],
       status: json['status'] ?? 'open',
@@ -59,15 +69,25 @@ class FacebookMessage {
   });
 
   factory FacebookMessage.fromJson(Map<String, dynamic> json) {
+    DateTime parsedDate;
+    try {
+      final rawDate = json['timestamp'];
+      if (rawDate != null) {
+        parsedDate = DateTime.parse(rawDate.toString()).toLocal();
+      } else {
+        parsedDate = DateTime.now();
+      }
+    } catch (e) {
+      parsedDate = DateTime.now();
+    }
+
     return FacebookMessage(
       id: json['id'],
       conversationId: json['conversation_id'],
       fromMe: json['from_me'] ?? false,
       senderName: json['sender_name'],
       content: json['content'],
-      timestamp: json['timestamp'] != null
-          ? DateTime.parse(json['timestamp'])
-          : DateTime.now(),
+      timestamp: parsedDate,
     );
   }
 }
